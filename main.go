@@ -4,10 +4,12 @@ import (
 	"bufio"
 	"flag"
 	"fmt"
+	"golang.org/x/net/context"
 	"golang.org/x/oauth2"
 	drive "google.golang.org/api/drive/v2"
 	"log"
 	"os"
+	"path"
 	"strings"
 	"sync"
 )
@@ -16,16 +18,16 @@ const (
 	// OAuth
 	oauthClientId     = "1019961849531-cdd5lb3cum793l4v802f2vva3q622mmk.apps.googleusercontent.com"
 	oauthClientSecret = "3ExqSKcqRGpTZDm0WRKhwCRl"
+	// Other
+	remoteRootDir = "annex"
+	chunkSize     = 4096
 )
 
-// Input/output channels. We could write to stdin/stdout directly, but this abstracts that a little bit.
 var (
+	// Input/output channels. We could write to stdin/stdout directly, but this abstracts that a little bit.
 	input  <-chan string
 	output chan<- string
 	done   sync.WaitGroup
-)
-
-var (
 	// If true, we don't block on STDIN being closed. Makes testing easier.
 	debug bool
 	// GDrive client.
@@ -40,6 +42,8 @@ var (
 		},
 		RedirectURL: "urn:ietf:wg:oauth:2.0:oob",
 	}
+	// Cache what directories exist remotely.
+	remoteCache = map[string]*drive.File{}
 )
 
 func print(s string, v interface{}) error {
@@ -93,8 +97,9 @@ func main() {
 	output <- "VERSION 1"
 
 	handlers := map[string]handler{
-		"INITREMOTE": initremote,
-		"PREPARE":    prepare,
+		"INITREMOTE":     initremote,
+		"PREPARE":        prepare,
+		"TRANSFER STORE": transfer,
 	}
 
 	for msg := range input {
@@ -128,6 +133,16 @@ func main() {
 
 	close(output)
 	done.Wait()
+}
+
+func getvalue(request string) ([]string, error) {
+	output <- request
+	r := <-input
+	parts := strings.Split(r, " ")
+	if len(parts) < 1 || parts[0] != "VALUE" {
+		return []string{}, fmt.Errorf("protocol error: unexpected reply to %v", request)
+	}
+	return parts[1:], nil
 }
 
 // Initremote initializes the OAuth creds. Because we can't get input from the
@@ -170,5 +185,70 @@ func prepare(args []string) error {
 	} else {
 		output <- "PREPARE-SUCCESS"
 	}
+	return nil
+}
+
+func maybeCreateFile(parents string, pth string, parent *drive.File) (*drive.File, error) {
+	h, tail := path.Split(pth)
+	if h == "" {
+		h, tail = tail, ""
+	}
+	p := path.Join(parents, h)
+	f, exists := remoteCache[p]
+	if !exists {
+		f := &drive.File{Title: h}
+		if parent != nil {
+			f.Parents = []*drive.ParentReference{&drive.ParentReference{Id: parent.Id}}
+		}
+		f, err := svc.Files.Insert(f).Do()
+		if err != nil {
+			return nil, err
+		}
+		remoteCache[p] = f
+	}
+	if tail != "" {
+		return maybeCreateFile(p, tail, f)
+	} else {
+		return f, nil
+	}
+}
+
+func transfer(args []string) error {
+	if len(args) != 2 {
+		return fmt.Errorf("protocol error: unexpected args %v to TRANSFER STORE", args)
+	}
+	k := args[0]
+	t := args[1]
+	// Get a dirhash to use to write remote with.
+	h, err := getvalue("DIRHASH " + k)
+	if err != nil {
+		return err
+	}
+	if len(h) != 1 {
+		return fmt.Errorf("protocol error: unexpeted %v for DIRHASH", h)
+	}
+	// Create the file object.
+	f, err := maybeCreateFile("", path.Join(h[0], k), nil)
+	if err != nil {
+		output <- fmt.Sprintf("TRANSFER-FAILURE STORE %v %v", k, err)
+		return nil
+	}
+	// Upload the contents.
+	local, err := os.Open(t)
+	defer local.Close()
+	if err != nil {
+		output <- fmt.Sprintf("TRANSFER-FAILURE STORE %v %v", k, err)
+		return nil
+	}
+	u := svc.Files.Update(f.Id, f).ResumableMedia(context.TODO(), local, chunkSize, "").ProgressUpdater(
+		func(current, total int64) {
+			output <- fmt.Sprintf("PROGRESS %d", current)
+		})
+	_, err = u.Do()
+	if err != nil {
+		output <- fmt.Sprintf("TRANSFER-FAILURE STORE %v, %v", k, err)
+		return nil
+	}
+	output <- fmt.Sprintf("TRANSFER-SUCCESS STORE %v", k)
 	return nil
 }
