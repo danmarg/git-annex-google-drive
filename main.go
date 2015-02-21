@@ -7,9 +7,10 @@ import (
 	"golang.org/x/net/context"
 	"golang.org/x/oauth2"
 	drive "google.golang.org/api/drive/v2"
+	"io"
 	"log"
+	"net/http"
 	"os"
-	"path"
 	"strings"
 	"sync"
 )
@@ -31,8 +32,9 @@ var (
 	// If true, we don't block on STDIN being closed. Makes testing easier.
 	debug bool
 	// GDrive client.
-	svc      *drive.Service
-	oauthCfg *oauth2.Config = &oauth2.Config{
+	svc        *drive.Service
+	httpClient *http.Client
+	oauthCfg   *oauth2.Config = &oauth2.Config{
 		ClientID:     oauthClientId,
 		ClientSecret: oauthClientSecret,
 		Scopes:       []string{drive.DriveScope},
@@ -97,9 +99,13 @@ func main() {
 	output <- "VERSION 1"
 
 	handlers := map[string]handler{
-		"INITREMOTE":     initremote,
-		"PREPARE":        prepare,
-		"TRANSFER STORE": transfer,
+		"INITREMOTE":        initremote,
+		"PREPARE":           prepare,
+		"TRANSFER STORE":    transfer,
+		"TRANSFER RETRIEVE": retrieve,
+		"CHECKPRESENT":      checkpresent,
+		"REMOVE":            remove,
+		"AVAILABILITY":      availability,
 	}
 
 	for msg := range input {
@@ -133,16 +139,6 @@ func main() {
 
 	close(output)
 	done.Wait()
-}
-
-func getvalue(request string) ([]string, error) {
-	output <- request
-	r := <-input
-	parts := strings.Split(r, " ")
-	if len(parts) < 1 || parts[0] != "VALUE" {
-		return []string{}, fmt.Errorf("protocol error: unexpected reply to %v", request)
-	}
-	return parts[1:], nil
 }
 
 // Initremote initializes the OAuth creds. Because we can't get input from the
@@ -179,7 +175,8 @@ func prepare(args []string) error {
 	t := oauth2.Token{RefreshToken: parts[2]}
 
 	var err error
-	svc, err = drive.New(oauthCfg.Client(oauth2.NoContext, &t))
+	httpClient = oauthCfg.Client(oauth2.NoContext, &t)
+	svc, err = drive.New(httpClient)
 	if err != nil {
 		output <- fmt.Sprintf("PREPARE-FAILURE %v", err)
 	} else {
@@ -188,67 +185,139 @@ func prepare(args []string) error {
 	return nil
 }
 
-func maybeCreateFile(parents string, pth string, parent *drive.File) (*drive.File, error) {
-	h, tail := path.Split(pth)
-	if h == "" {
-		h, tail = tail, ""
-	}
-	p := path.Join(parents, h)
-	f, exists := remoteCache[p]
-	if !exists {
-		f := &drive.File{Title: h}
-		if parent != nil {
-			f.Parents = []*drive.ParentReference{&drive.ParentReference{Id: parent.Id}}
-		}
-		f, err := svc.Files.Insert(f).Do()
-		if err != nil {
-			return nil, err
-		}
-		remoteCache[p] = f
-	}
-	if tail != "" {
-		return maybeCreateFile(p, tail, f)
-	} else {
-		return f, nil
-	}
-}
-
 func transfer(args []string) error {
 	if len(args) != 2 {
 		return fmt.Errorf("protocol error: unexpected args %v to TRANSFER STORE", args)
 	}
 	k := args[0]
 	t := args[1]
-	// Get a dirhash to use to write remote with.
-	h, err := getvalue("DIRHASH " + k)
-	if err != nil {
-		return err
-	}
-	if len(h) != 1 {
-		return fmt.Errorf("protocol error: unexpeted %v for DIRHASH", h)
-	}
 	// Create the file object.
-	f, err := maybeCreateFile("", path.Join(h[0], k), nil)
-	if err != nil {
-		output <- fmt.Sprintf("TRANSFER-FAILURE STORE %v %v", k, err)
-		return nil
+	f, ok := remoteCache[k]
+	if !ok {
+		f = &drive.File{Title: k}
 	}
 	// Upload the contents.
 	local, err := os.Open(t)
 	defer local.Close()
 	if err != nil {
-		output <- fmt.Sprintf("TRANSFER-FAILURE STORE %v %v", k, err)
+		output <- fmt.Sprintf("TRANSFER-FAILURE STORE %s %v", k, err)
 		return nil
 	}
-	u := svc.Files.Update(f.Id, f).ResumableMedia(context.TODO(), local, chunkSize, "").ProgressUpdater(
+	u := svc.Files.Insert(f).ResumableMedia(context.TODO(), local, chunkSize, "").ProgressUpdater(
 		func(current, total int64) {
 			output <- fmt.Sprintf("PROGRESS %d", current)
 		})
 	_, err = u.Do()
 	if err != nil {
-		output <- fmt.Sprintf("TRANSFER-FAILURE STORE %v, %v", k, err)
+		output <- fmt.Sprintf("TRANSFER-FAILURE STORE %s, %v", k, err)
 		return nil
 	}
+	remoteCache[k] = f
 	output <- fmt.Sprintf("TRANSFER-SUCCESS STORE %v", k)
+	return nil
+}
+
+var notfound error = fmt.Errorf("not found")
+
+func getFile(k string) (*drive.File, error) {
+	f, ok := remoteCache[k]
+	if ok {
+		return f, nil
+	}
+	fs, err := svc.Files.List().Q(fmt.Sprintf("title='%s' and trashed=false", k)).Do()
+	if err != nil {
+		return nil, err
+	}
+	for _, f := range fs.Items {
+		if f.Title == k {
+			return f, nil
+		}
+	}
+	return nil, notfound
+}
+
+func retrieve(args []string) error {
+	if len(args) != 2 {
+		return fmt.Errorf("protocol error: unexpected args %v to TRANSFER STORE", args)
+	}
+	k := args[0]
+	t := args[1]
+	// Get the file ID.
+	f, err := getFile(k)
+	if err != nil {
+		output <- fmt.Sprintf("TRANSFER-FAILURE RETRIEVE %s %v", k, err)
+		return nil
+	}
+	r, err := httpClient.Get(f.DownloadUrl)
+	if err != nil {
+		output <- fmt.Sprintf("TRANSFER-FAILURE RETRIEVE %s %v", k, err)
+		return nil
+	}
+	w, err := os.Open(t)
+	defer w.Close()
+	if err != nil {
+		output <- fmt.Sprintf("TRANSFER-FAILURE RETRIEVE %s %v", k, err)
+		return nil
+	}
+	c := 0
+	for {
+		b := make([]byte, chunkSize)
+		n, err := r.Body.Read(b)
+		if err == io.EOF {
+			break
+		} else if err != nil {
+			output <- fmt.Sprintf("TRANSFER-FAILURE RETRIEVE %s %v", k, err)
+			return nil
+		}
+		c += n
+		output <- fmt.Sprintf("PROGRESS %d", c)
+		_, err = w.Write(b[:n])
+		if err != nil {
+			output <- fmt.Sprintf("TRANSFER-FAILURE RETRIEVE %s %v", k, err)
+			return nil
+		}
+	}
+	output <- "TRANSFER-SUCCESS RETRIEVE " + k
+	return nil
+}
+
+func checkpresent(args []string) error {
+	if len(args) != 1 {
+		return fmt.Errorf("protocol error: unexpected args %v to CHECKPRESENT", args)
+	}
+	k := args[0]
+	_, err := getFile(k)
+	if err == notfound {
+		output <- fmt.Sprintf("CHECKPRESENT-FAILURE %s", k)
+
+	} else if err != nil {
+		output <- fmt.Sprintf("CHECKPRESENT-UNKNOWN %s, %v", k, err)
+	} else {
+		output <- fmt.Sprintf("CHECKPRESENT-SUCCESS %s", k)
+	}
+	return nil
+}
+
+func remove(args []string) error {
+	if len(args) != 1 {
+		return fmt.Errorf("protocol error: unexpected args %v to REMOVE", args)
+	}
+	k := args[0]
+	f, err := getFile(k)
+	if err != nil {
+		output <- fmt.Sprintf("REMOVE-FAILURE %s %v", k, err)
+		return nil
+	}
+	err = svc.Files.Delete(f.Id).Do()
+	if err != nil {
+		output <- fmt.Sprintf("REMOVE-FAILURE %s %v", k, err)
+	} else {
+		output <- fmt.Sprintf("REMOVE-SUCCESS %s", k)
+	}
+	return nil
+}
+
+func availability(args []string) error {
+	output <- "AVAILABILITY REMOTE"
 	return nil
 }
