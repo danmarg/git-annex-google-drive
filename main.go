@@ -149,18 +149,14 @@ func initremote(args []string) error {
 	// If this is a second run, OAUTH will be set.
 	code := os.Getenv("OAUTH")
 	if code != "" {
-		print("here")
 		tok, err := oauthCfg.Exchange(oauth2.NoContext, code)
-		print("here done")
 		if err != nil {
 			print("TOKEN: [[%v]]", code)
 			output <- fmt.Sprintf("INITREMOTE-FAILURE %v", err)
 			return nil
 		}
-		print("here ok")
 		output <- fmt.Sprintf("SETCREDS oauth oauth %s", tok.RefreshToken)
 		output <- "INITREMOTE-SUCCESS"
-		print("here done")
 	} else {
 		url := oauthCfg.AuthCodeURL("state", oauth2.AccessTypeOffline)
 		print("***\nVisit the URL for the OAuth dialog: %v\n***\n", url)
