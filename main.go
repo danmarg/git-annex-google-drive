@@ -44,6 +44,7 @@ var (
 	// Cache what directories exist remotely.
 	remoteCache   = map[string]*drive.File{}
 	remoteRootDir = "annex"
+	root          *drive.File
 )
 
 func print(s string, v ...interface{}) error {
@@ -188,7 +189,15 @@ func prepare(args []string) error {
 	if len(parts) != 2 || parts[0] != "VALUE" {
 		return fmt.Errorf("protocol error: unexpected reply to GETCONFIG")
 	}
-	remoteRootDir = parts[1]
+	if parts[1] != "" {
+		remoteRootDir = parts[1]
+	}
+	// Make the root if it doesn't already exist.
+	root, err = makeOrGetRoot()
+	if err != nil {
+		output <- fmt.Sprintf("PREPARE-FAILURE %v", err)
+		return nil
+	}
 	output <- "PREPARE-SUCCESS"
 	return nil
 }
@@ -202,14 +211,10 @@ func transfer(args []string) error {
 	// Create the file object.
 	f, err := getFile(k)
 	if err == notfound {
-		p, err := makeOrGetRoot()
-		if err != nil {
-			output <- fmt.Sprintf("TRANSFER-FAILURE STORE %s %v", k, err)
-			return nil
-		}
 		f = &drive.File{
 			Title:   k,
-			Parents: []*drive.ParentReference{&drive.ParentReference{Id: p.Id}}}
+			Parents: []*drive.ParentReference{&drive.ParentReference{Id: root.Id}},
+		}
 	} else if err != nil {
 		output <- fmt.Sprintf("TRANSFER-FAILURE STORE %s %v", k, err)
 		return nil
@@ -221,7 +226,7 @@ func transfer(args []string) error {
 		output <- fmt.Sprintf("TRANSFER-FAILURE STORE %s %v", k, err)
 		return nil
 	}
-	u := svc.Files.Insert(f).ResumableMedia(context.TODO(), local, chunkSize, "").ProgressUpdater(
+	u := svc.Files.Insert(f).Media(local).ProgressUpdater(
 		func(current, total int64) {
 			output <- fmt.Sprintf("PROGRESS %d", current)
 		})
@@ -242,7 +247,7 @@ func getFile(k string) (*drive.File, error) {
 	if ok {
 		return f, nil
 	}
-	fs, err := svc.Files.List().Q(fmt.Sprintf("title='%s' and parent='%s' and trashed=false", k, remoteRootDir)).Do()
+	fs, err := svc.Files.List().Q(fmt.Sprintf("title='%s' and '%s' in parents and trashed=false", k, root.Id)).Do()
 	if err != nil {
 		return nil, err
 	}
@@ -258,7 +263,7 @@ func makeOrGetRoot() (*drive.File, error) {
 	if f, ok := remoteCache[remoteRootDir]; ok {
 		return f, nil
 	}
-	f := &drive.File{Title: remoteRootDir}
+	f := &drive.File{Title: remoteRootDir, MimeType: "application/vnd.google-apps.folder"}
 	f, err := svc.Files.Insert(f).Do()
 	if err != nil {
 		return nil, err
