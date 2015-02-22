@@ -67,11 +67,7 @@ func init() {
 		debug = true
 	}
 
-	if debug {
-		done.Add(1)
-	} else {
-		done.Add(2)
-	}
+	done.Add(2)
 	// Input.
 	i := make(chan string)
 	input = i
@@ -275,7 +271,7 @@ func getFile(k string) (*drive.File, error) {
 }
 
 func makeOrGetRoot() (*drive.File, error) {
-	fs, err := svc.Files.List().Q(fmt.Sprintf("title='%s' in parents and trashed=false", remoteRootDir)).Do()
+	fs, err := svc.Files.List().Q(fmt.Sprintf("title='%s' and trashed=false", remoteRootDir)).Do()
 	if err != nil {
 		return nil, err
 	}
