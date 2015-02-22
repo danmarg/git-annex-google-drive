@@ -21,8 +21,8 @@ import (
 
 const (
 	// OAuth
-	oauthClientId     = "1019961849531-cdd5lb3cum793l4v802f2vva3q622mmk.apps.googleusercontent.com"
-	oauthClientSecret = "3ExqSKcqRGpTZDm0WRKhwCRl"
+	oauthClientId     = "239607100490-ssutkn8of2nn2muff0r4efdgip3st0p0.apps.googleusercontent.com"
+	oauthClientSecret = "9dPHlXoUfEn-5Yf4GF6bXO3y"
 	// Other
 	chunkSize = 4096
 )
