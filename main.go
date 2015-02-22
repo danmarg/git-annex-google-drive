@@ -212,11 +212,13 @@ func prepare(args []string) error {
 
 type progressReader struct {
 	r io.Reader
+	p int
 }
 
 func (r *progressReader) Read(p []byte) (n int, err error) {
 	n, err = r.r.Read(p)
-	output <- fmt.Sprintf("PROGRESS %d", n)
+	r.p += n
+	output <- fmt.Sprintf("PROGRESS %d", r.p)
 	return n, err
 }
 
