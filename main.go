@@ -259,7 +259,6 @@ func getFile(k string) (*drive.File, error) {
 	}
 	fs, err := svc.Files.List().Q(fmt.Sprintf("title='%s' and '%s' in parents and trashed=false", k, root.Id)).Do()
 	if err != nil {
-		print("Error: %v", err)
 		return nil, err
 	}
 	for _, f := range fs.Items {
@@ -305,25 +304,27 @@ func retrieve(args []string) error {
 		output <- fmt.Sprintf("TRANSFER-FAILURE RETRIEVE %s %v", k, err)
 		return nil
 	}
-	w, err := os.Open(t)
+	w, err := os.Create(t)
 	defer w.Close()
 	if err != nil {
 		output <- fmt.Sprintf("TRANSFER-FAILURE RETRIEVE %s %v", k, err)
 		return nil
 	}
 	c := 0
-	for {
+	for eof := false; !eof; {
 		b := make([]byte, chunkSize)
 		n, err := r.Body.Read(b)
-		if err == io.EOF {
-			break
-		} else if err != nil {
-			output <- fmt.Sprintf("TRANSFER-FAILURE RETRIEVE %s %v", k, err)
-			return nil
+		if err != nil {
+			if err == io.EOF {
+				eof = true
+			} else {
+				output <- fmt.Sprintf("TRANSFER-FAILURE RETRIEVE %s %v", k, err)
+				return nil
+			}
 		}
 		c += n
 		output <- fmt.Sprintf("PROGRESS %d", c)
-		_, err = w.Write(b[:n])
+		x, err := w.Write(b[:n])
 		if err != nil {
 			output <- fmt.Sprintf("TRANSFER-FAILURE RETRIEVE %s %v", k, err)
 			return nil
