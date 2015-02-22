@@ -275,15 +275,20 @@ func getFile(k string) (*drive.File, error) {
 }
 
 func makeOrGetRoot() (*drive.File, error) {
-	if f, ok := remoteCache[remoteRootDir]; ok {
-		return f, nil
-	}
-	f := &drive.File{Title: remoteRootDir, MimeType: "application/vnd.google-apps.folder"}
-	f, err := svc.Files.Insert(f).Do()
+	fs, err := svc.Files.List().Q(fmt.Sprintf("title='%s' in parents and trashed=false", remoteRootDir)).Do()
 	if err != nil {
 		return nil, err
 	}
-	remoteCache[remoteRootDir] = f
+	for _, f := range fs.Items {
+		if f.Title == remoteRootDir {
+			return f, nil
+		}
+	}
+	f := &drive.File{Title: remoteRootDir, MimeType: "application/vnd.google-apps.folder"}
+	f, err = svc.Files.Insert(f).Do()
+	if err != nil {
+		return nil, err
+	}
 	return f, nil
 }
 
