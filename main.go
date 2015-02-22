@@ -2,6 +2,9 @@ package main
 
 import (
 	"bufio"
+	"bytes"
+	"encoding/base64"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"golang.org/x/net/context"
@@ -154,7 +157,13 @@ func initremote(args []string) error {
 		output <- fmt.Sprintf("INITREMOTE-FAILURE %v", err)
 		return nil
 	}
-	output <- fmt.Sprintf("SETCREDS oauth oauth %s", tok.RefreshToken)
+	b := &bytes.Buffer{}
+	e := json.NewEncoder(b)
+	if err := e.Encode(tok); err != nil {
+		return err
+	}
+	output <- fmt.Sprintf("SETCREDS oauth oauth %s", base64.StdEncoding.EncodeToString(b.Bytes()))
+
 	output <- "INITREMOTE-SUCCESS"
 	return nil
 }
@@ -166,22 +175,27 @@ func prepare(args []string) error {
 	if len(parts) < 3 || parts[0] != "CREDS" {
 		return fmt.Errorf("protocol error: unexpected reply to GETCREDS")
 	}
-	t := &oauth2.Token{RefreshToken: parts[2]}
-
-	var err error
+	b, err := base64.StdEncoding.DecodeString(parts[2])
+	if err != nil {
+		return err
+	}
+	d := json.NewDecoder(strings.NewReader(string(b)))
+	tok := &oauth2.Token{}
+	if err := d.Decode(tok); err != nil {
+		return err
+	}
 	ctx := context.Background()
 	if debug {
 		ctx = context.WithValue(ctx, oauth2.HTTPClient, &http.Client{
 			Transport: &logTransport{http.DefaultTransport},
 		})
 	}
-	httpClient = oauthCfg.Client(ctx, t)
+	httpClient = oauthCfg.Client(ctx, tok)
 	svc, err = drive.New(httpClient)
 	if err != nil {
 		output <- fmt.Sprintf("PREPARE-FAILURE %v", err)
 		return nil
 	}
-
 	// Get the remote dir.
 	output <- "GETCONFIG directory"
 	r = <-input
@@ -249,6 +263,7 @@ func getFile(k string) (*drive.File, error) {
 	}
 	fs, err := svc.Files.List().Q(fmt.Sprintf("title='%s' and '%s' in parents and trashed=false", k, root.Id)).Do()
 	if err != nil {
+		print("Error: %v", err)
 		return nil, err
 	}
 	for _, f := range fs.Items {
@@ -325,7 +340,6 @@ func checkpresent(args []string) error {
 	_, err := getFile(k)
 	if err == notfound {
 		output <- fmt.Sprintf("CHECKPRESENT-FAILURE %s", k)
-
 	} else if err != nil {
 		output <- fmt.Sprintf("CHECKPRESENT-UNKNOWN %s, %v", k, err)
 	} else {
