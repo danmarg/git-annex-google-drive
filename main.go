@@ -324,7 +324,7 @@ func retrieve(args []string) error {
 		}
 		c += n
 		output <- fmt.Sprintf("PROGRESS %d", c)
-		x, err := w.Write(b[:n])
+		_, err = w.Write(b[:n])
 		if err != nil {
 			output <- fmt.Sprintf("TRANSFER-FAILURE RETRIEVE %s %v", k, err)
 			return nil
@@ -356,7 +356,10 @@ func remove(args []string) error {
 	}
 	k := args[0]
 	f, err := getFile(k)
-	if err != nil {
+	if err == notfound {
+		output <- fmt.Sprintf("REMOVE-SUCCESS %s", k)
+		return nil
+	} else if err != nil {
 		output <- fmt.Sprintf("REMOVE-FAILURE %s %v", k, err)
 		return nil
 	}
