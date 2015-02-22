@@ -44,8 +44,6 @@ var (
 		Endpoint:     google.Endpoint,
 		RedirectURL:  "urn:ietf:wg:oauth:2.0:oob",
 	}
-	// Cache what directories exist remotely.
-	remoteCache   = map[string]*drive.File{}
 	remoteRootDir = "annex"
 	root          *drive.File
 )
@@ -228,6 +226,10 @@ func transfer(args []string) error {
 	} else if err != nil {
 		output <- fmt.Sprintf("TRANSFER-FAILURE STORE %s %v", k, err)
 		return nil
+	} else {
+		// Already present.
+		output <- fmt.Sprintf("TRANSFER-SUCCESS STORE %v", k)
+		return nil
 	}
 	// Upload the contents.
 	local, err := os.Open(t)
@@ -245,7 +247,6 @@ func transfer(args []string) error {
 		output <- fmt.Sprintf("TRANSFER-FAILURE STORE %s, %v", k, err)
 		return nil
 	}
-	remoteCache[k] = f
 	output <- fmt.Sprintf("TRANSFER-SUCCESS STORE %v", k)
 	return nil
 }
@@ -253,10 +254,6 @@ func transfer(args []string) error {
 var notfound error = fmt.Errorf("not found")
 
 func getFile(k string) (*drive.File, error) {
-	f, ok := remoteCache[k]
-	if ok {
-		return f, nil
-	}
 	fs, err := svc.Files.List().Q(fmt.Sprintf("title='%s' and '%s' in parents and trashed=false", k, root.Id)).Do()
 	if err != nil {
 		return nil, err
@@ -294,17 +291,20 @@ func retrieve(args []string) error {
 	k := args[0]
 	t := args[1]
 	// Get the file ID.
+	print("RETRIEVE: %v\n", k)
 	f, err := getFile(k)
 	if err != nil {
 		output <- fmt.Sprintf("TRANSFER-FAILURE RETRIEVE %s %v", k, err)
 		return nil
 	}
 	r, err := httpClient.Get(f.DownloadUrl)
+	print("RETRIEVE ERR1: %v\n", err)
 	if err != nil {
 		output <- fmt.Sprintf("TRANSFER-FAILURE RETRIEVE %s %v", k, err)
 		return nil
 	}
 	w, err := os.Create(t)
+	print("RETRIEVE ERR2: %v\n", err)
 	defer w.Close()
 	if err != nil {
 		output <- fmt.Sprintf("TRANSFER-FAILURE RETRIEVE %s %v", k, err)
@@ -330,6 +330,7 @@ func retrieve(args []string) error {
 			return nil
 		}
 	}
+	print("RETRIEVED %s %d\n", k, c)
 	output <- "TRANSFER-SUCCESS RETRIEVE " + k
 	return nil
 }
