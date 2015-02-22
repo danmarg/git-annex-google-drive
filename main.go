@@ -210,6 +210,16 @@ func prepare(args []string) error {
 	return nil
 }
 
+type progressReader struct {
+	r io.Reader
+}
+
+func (r *progressReader) Read(p []byte) (n int, err error) {
+	n, err = r.r.Read(p)
+	output <- fmt.Sprintf("PROGRESS %d", n)
+	return n, err
+}
+
 func transfer(args []string) error {
 	if len(args) != 2 {
 		return fmt.Errorf("protocol error: unexpected args %v to TRANSFER STORE", args)
@@ -238,10 +248,7 @@ func transfer(args []string) error {
 		output <- fmt.Sprintf("TRANSFER-FAILURE STORE %s %v", k, err)
 		return nil
 	}
-	u := svc.Files.Insert(f).Media(local).ProgressUpdater(
-		func(current, total int64) {
-			output <- fmt.Sprintf("PROGRESS %d", current)
-		})
+	u := svc.Files.Insert(f).Media(&progressReader{r: local})
 	_, err = u.Do()
 	if err != nil {
 		output <- fmt.Sprintf("TRANSFER-FAILURE STORE %s, %v", k, err)
@@ -291,20 +298,17 @@ func retrieve(args []string) error {
 	k := args[0]
 	t := args[1]
 	// Get the file ID.
-	print("RETRIEVE: %v\n", k)
 	f, err := getFile(k)
 	if err != nil {
 		output <- fmt.Sprintf("TRANSFER-FAILURE RETRIEVE %s %v", k, err)
 		return nil
 	}
 	r, err := httpClient.Get(f.DownloadUrl)
-	print("RETRIEVE ERR1: %v\n", err)
 	if err != nil {
 		output <- fmt.Sprintf("TRANSFER-FAILURE RETRIEVE %s %v", k, err)
 		return nil
 	}
 	w, err := os.Create(t)
-	print("RETRIEVE ERR2: %v\n", err)
 	defer w.Close()
 	if err != nil {
 		output <- fmt.Sprintf("TRANSFER-FAILURE RETRIEVE %s %v", k, err)
@@ -330,7 +334,6 @@ func retrieve(args []string) error {
 			return nil
 		}
 	}
-	print("RETRIEVED %s %d\n", k, c)
 	output <- "TRANSFER-SUCCESS RETRIEVE " + k
 	return nil
 }
