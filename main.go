@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"golang.org/x/net/context"
 	"golang.org/x/oauth2"
+	"golang.org/x/oauth2/google"
 	drive "google.golang.org/api/drive/v2"
 	"io"
 	"log"
@@ -37,11 +38,8 @@ var (
 		ClientID:     oauthClientId,
 		ClientSecret: oauthClientSecret,
 		Scopes:       []string{drive.DriveScope},
-		Endpoint: oauth2.Endpoint{
-			AuthURL:  "https://accounts.google.com/o/oauth2/auth",
-			TokenURL: "https://accounts.google.com/o/oauth2/token",
-		},
-		RedirectURL: "urn:ietf:wg:oauth:2.0:oob",
+		Endpoint:     google.Endpoint,
+		RedirectURL:  "urn:ietf:wg:oauth:2.0:oob",
 	}
 	// Cache what directories exist remotely.
 	remoteCache   = map[string]*drive.File{}
@@ -61,6 +59,9 @@ func logErr(err error) {
 func init() {
 	flag.BoolVar(&debug, "debug", false, "Debug mode (don't block on STDIN)")
 	flag.Parse()
+	if !debug && os.Getenv("DEBUG") == "true" {
+		debug = true
+	}
 
 	if debug {
 		done.Add(1)
@@ -147,21 +148,13 @@ func main() {
 // auth code in the OAUTH env var.
 func initremote(args []string) error {
 	// If this is a second run, OAUTH will be set.
-	code := os.Getenv("OAUTH")
-	if code != "" {
-		tok, err := oauthCfg.Exchange(oauth2.NoContext, code)
-		if err != nil {
-			print("TOKEN: [[%v]]", code)
-			output <- fmt.Sprintf("INITREMOTE-FAILURE %v", err)
-			return nil
-		}
-		output <- fmt.Sprintf("SETCREDS oauth oauth %s", tok.RefreshToken)
-		output <- "INITREMOTE-SUCCESS"
-	} else {
-		url := oauthCfg.AuthCodeURL("state", oauth2.AccessTypeOffline)
-		print("***\nVisit the URL for the OAuth dialog: %v\n***\n", url)
-		output <- "INITREMOTE-FAILURE missing OAUTH env var"
+	tok, err := tokenFromWeb(context.TODO(), oauthCfg)
+	if err != nil {
+		output <- fmt.Sprintf("INITREMOTE-FAILURE %v", err)
+		return nil
 	}
+	output <- fmt.Sprintf("SETCREDS oauth oauth %s", tok.RefreshToken)
+	output <- "INITREMOTE-SUCCESS"
 	return nil
 }
 
@@ -172,11 +165,16 @@ func prepare(args []string) error {
 	if len(parts) < 3 || parts[0] != "CREDS" {
 		return fmt.Errorf("protocol error: unexpected reply to GETCREDS")
 	}
-	// TODO: Does this work? Or do we have to store the access token and expiry as well?
-	t := oauth2.Token{RefreshToken: parts[2]}
+	t := &oauth2.Token{RefreshToken: parts[2]}
 
 	var err error
-	httpClient = oauthCfg.Client(oauth2.NoContext, &t)
+	ctx := context.Background()
+	if debug {
+		ctx = context.WithValue(ctx, oauth2.HTTPClient, &http.Client{
+			Transport: &logTransport{http.DefaultTransport},
+		})
+	}
+	httpClient = oauthCfg.Client(ctx, t)
 	svc, err = drive.New(httpClient)
 	if err != nil {
 		output <- fmt.Sprintf("PREPARE-FAILURE %v", err)
