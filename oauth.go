@@ -14,8 +14,12 @@ import (
 
 func tokenFromEnvOrWeb(ctx context.Context, config *oauth2.Config) (*oauth2.Token, error) {
 	code := os.Getenv("OAUTH")
-	if code == "" {
+	if code == "NOBROWSER" {
+		authURL := config.AuthCodeURL("")
+		return nil, fmt.Errorf("Authorize this app at %s and rerun with environment variable 'OAUTH' set to the auth code!", authURL)
+	} else if code == "" {
 		var err error
+		print("Launching browser for OAuth exchange. If running remotely or no browser is installed, rerun with environment varibale 'OAUTH' set to 'NOBROWSER'.\n")
 		code, err = tokenFromWeb(ctx, config)
 		if err != nil {
 			config.RedirectURL = "urn:ietf:wg:oauth:2.0:oob"
