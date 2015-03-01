@@ -146,7 +146,7 @@ func main() {
 // auth code in the OAUTH env var.
 func initremote(args []string) error {
 	// If this is a second run, OAUTH will be set.
-	tok, err := tokenFromWeb(context.TODO(), oauthCfg)
+	tok, err := tokenFromEnvOrWeb(context.TODO(), oauthCfg)
 	if err != nil {
 		output <- fmt.Sprintf("INITREMOTE-FAILURE %v", err)
 		return nil
