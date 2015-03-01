@@ -20,7 +20,7 @@ func tokenFromEnvOrWeb(ctx context.Context, config *oauth2.Config) (*oauth2.Toke
 		if err != nil {
 			config.RedirectURL = "urn:ietf:wg:oauth:2.0:oob"
 			authURL := config.AuthCodeURL("")
-			return nil, fmt.Errorf("Authorize this app at %s and rerun with env OAUTH as the auth code", authURL)
+			return nil, fmt.Errorf("Authorize this app at %s and rerun with environment variable 'OAUTH' set to the auth code!", authURL)
 		}
 	}
 	token, err := config.Exchange(ctx, code)
@@ -51,18 +51,24 @@ func tokenFromWeb(ctx context.Context, config *oauth2.Config) (string, error) {
 	defer ts.Close()
 	config.RedirectURL = ts.URL
 	authURL := config.AuthCodeURL(randState)
-	if err := openURL(authURL); err != nil {
+	errs := make(chan error)
+	go func() {
+		err := openURL(authURL)
+		errs <- err
+	}()
+	err := <-errs
+	if err == nil {
+		code := <-ch
+		return code, nil
+	} else {
 		return "", err
 	}
-	print("Authorize this app at: %s", authURL)
-	code := <-ch
-	return code, nil
 }
 
 func openURL(url string) error {
 	try := []string{"xdg-open", "google-chrome", "open"}
 	for _, bin := range try {
-		err := exec.Command(bin, url).Start()
+		err := exec.Command(bin, url).Run()
 		if err == nil {
 			return nil
 		}
